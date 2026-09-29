@@ -1,13 +1,13 @@
-# @foliant/client
+# foliant-client
 
 TypeScript client for [Foliant](https://foliant.network): budgeted agent accounts, payment channels and pools, and paying x402 endpoints against a Foliant ledger node. The agent side of the [reference implementation](https://github.com/gazoy/concord), byte-compatible with it: keys, addresses, canonical hashing and signatures are tested against vectors produced by the Python code.
 
 ```bash
-npm install @foliant/client
+npm install foliant-client
 ```
 
 ```ts
-import { Agent, KeyPair, LedgerNode, PayingClient, Policy } from "@foliant/client";
+import { Agent, KeyPair, LedgerNode, PayingClient, Policy } from "foliant-client";
 
 const node = new LedgerNode("http://127.0.0.1:8402");           // python demo/serve.py in the reference repo
 const agent = await Agent.register(node, KeyPair.generate(), KeyPair.generate(), new Policy(500, 200, 3600));

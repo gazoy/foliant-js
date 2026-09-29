@@ -1,5 +1,5 @@
 {
-  "name": "@foliant/client",
+  "name": "foliant-client",
   "version": "0.1.0",
   "description": "Foliant client: budgeted agent accounts, payment channels and pools, paying x402 endpoints against a Foliant ledger node",
   "main": "dist/index.js",
