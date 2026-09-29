@@ -1,0 +1,130 @@
+{
+ "seeds": [
+  {
+   "seed": "alice",
+   "pub": "d5bf4a3fcce717b0388bcc2749ebc148ad9969b23f45ee1b605fd58778576ac4",
+   "address": "59163ce8a8ac0704a5ca85362652a40bec7f2cbd"
+  },
+  {
+   "seed": "provider",
+   "pub": "1f583a483904bb1d4e75cf13a12a78aab6692381e0a6fa9ad8e88c9f272bb907",
+   "address": "ff69f5cac59192ca36cd0e51b47a642ec86327b2"
+  },
+  {
+   "seed": "root-signer",
+   "pub": "695cacafd741f0efcdb447ff08deeb2d83e1df8cdab13c7af35289a686e7228f",
+   "address": "5ebc87b165647a15eba7f852aace8ad94ac44d8e"
+  },
+  {
+   "seed": "worker-0",
+   "pub": "6f80367c4911668d93074e58217b0ebe3d44ed02ec8ad7be6fa74e9771356d5f",
+   "address": "11ebf2705e81a44d951376e8bcf90d7adde8d6e1"
+  }
+ ],
+ "canonical": [
+  {
+   "obj": {
+    "b": 1,
+    "a": [
+     1,
+     2,
+     {
+      "z": null,
+      "y": true
+     }
+    ],
+    "c": "h\u00e9llo \"q\" \\ \n \u2713 \ud83d\ude00"
+   },
+   "bytes": "{\"a\":[1,2,{\"y\":true,\"z\":null}],\"b\":1,\"c\":\"h\\u00e9llo \\\"q\\\" \\\\ \\n \\u2713 \\ud83d\\ude00\"}",
+   "hash": "75bb54799ffc0059ab41e203b48b31e11fdafa4959dfaffd388750270ccf2772"
+  },
+  {
+   "obj": {
+    "kind": "channel",
+    "id": "abc",
+    "seq": 3,
+    "balance": 60,
+    "account": "0000000000000000000000000000000000000000000000000000000000000000"
+   },
+   "bytes": "{\"account\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"balance\":60,\"id\":\"abc\",\"kind\":\"channel\",\"seq\":3}",
+   "hash": "92963cad5c7c082a16dcc552f13eee57ee29c5fc7669d8482c3259ef78c5b882"
+  },
+  {
+   "obj": {
+    "per_tx_max": 500,
+    "per_window_max": 200,
+    "window_secs": 3600,
+    "allow_list": [
+     "a",
+     "b"
+    ],
+    "deny_list": [
+     "d"
+    ],
+    "expiry": null,
+    "escalation": null
+   },
+   "bytes": "{\"allow_list\":[\"a\",\"b\"],\"deny_list\":[\"d\"],\"escalation\":null,\"expiry\":null,\"per_tx_max\":500,\"per_window_max\":200,\"window_secs\":3600}",
+   "hash": "29cb7562c7fe02d2bef79a5b5d0dd15512a33a07ebeb9da6c9c5b54ed93f938d"
+  },
+  {
+   "obj": {
+    "nested": {
+     "empty": {},
+     "list": []
+    },
+    "num": 0,
+    "neg": -5
+   },
+   "bytes": "{\"neg\":-5,\"nested\":{\"empty\":{},\"list\":[]},\"num\":0}",
+   "hash": "65ce2702abf6ca03c84ca7d2d94e10f06edc6b590b263cb816ef71a97b9aa52d"
+  }
+ ],
+ "signed": [
+  {
+   "body": {
+    "b": 1,
+    "a": [
+     1,
+     2,
+     {
+      "z": null,
+      "y": true
+     }
+    ],
+    "c": "h\u00e9llo \"q\" \\ \n \u2713 \ud83d\ude00"
+   },
+   "signer": {
+    "scheme": "ed25519",
+    "key": "d5bf4a3fcce717b0388bcc2749ebc148ad9969b23f45ee1b605fd58778576ac4"
+   },
+   "signature": "73e5b7bc8f274595bd6104cc26b9eb543f0e1c078bc507b2e0b9aa582adfb4919ff56f93a5e80ababcf1e3f704e0dbb0a6a7303edf1cfcfec0bf8c6ea3f09009"
+  },
+  {
+   "body": {
+    "kind": "channel",
+    "id": "abc",
+    "seq": 3,
+    "balance": 60,
+    "account": "0000000000000000000000000000000000000000000000000000000000000000"
+   },
+   "signer": {
+    "scheme": "ed25519",
+    "key": "d5bf4a3fcce717b0388bcc2749ebc148ad9969b23f45ee1b605fd58778576ac4"
+   },
+   "signature": "40db58eac6523fc72283ca5a0288061879dc82009b43a0b676f2fa21c4ee69745075e61a8646fa200eb5c969d12d559d127ccf73b4ccbfe53f4cbc057c5fe40c"
+  }
+ ],
+ "policy_id": {
+  "policy": {
+   "per_tx_max": 500,
+   "per_window_max": 200,
+   "window_secs": 3600,
+   "allow_list": null,
+   "deny_list": [],
+   "expiry": null,
+   "escalation": null
+  },
+  "id": "4ab4972f3b6645fbcaaa13f17e91bef794670e91ced0cb946814e4a99ca5b21f"
+ }
+}
