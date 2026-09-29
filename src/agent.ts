@@ -95,15 +95,21 @@ export class AgentSigner {
     return sign(this.keypair, body);
   }
 
-  signUpdate(kind: "channel" | "pool", objId: string, payee: string, seq: number, balance: number, now: number): Signed {
+  signUpdate(kind: "channel" | "pool", objId: string, payee: string, seq: number, balance: number, now: number, epoch?: number): Signed {
     const last = this.lastBalance.get(objId) ?? 0;
     if (balance < last) throw new PolicyViolation("balance must not decrease");
     const spent = this.window.spent(now, this.policy.windowSecs);
     this.policy.check(0, payee, now, spent);
-    const body = { kind, id: objId, seq, balance, account: this.accountId };
+    const body: { [k: string]: Json } = { kind, id: objId, seq, balance, account: this.accountId };
+    if (epoch !== undefined) body.epoch = epoch; // pool claims: which membership this update belongs to
     const s = sign(this.keypair, body);
     this.lastBalance.set(objId, balance);
     return s;
+  }
+
+  /** Drop the monotonic-balance record for a closed channel or exited pool claim. */
+  forget(objId: string): void {
+    this.lastBalance.delete(objId);
   }
 
   signPlain(body: { [k: string]: Json }): Signed {
@@ -134,7 +140,7 @@ export interface ChannelView {
 
 export interface PoolView {
   id: string; coordinator: string; asset: string; timeout_secs: number;
-  members: Record<string, { deposit: number; paid: number; seq: number; exit_at: number | null; exited: boolean }>;
+  members: Record<string, { deposit: number; paid: number; seq: number; exit_at: number | null; exited: boolean; epoch: number }>;
 }
 
 export class LedgerError extends Error {
@@ -258,8 +264,13 @@ export class Agent {
     return this.submit("begin_exit", { pool_id: poolId, latest: latest ? (latest.toDict() as unknown as Json) : null });
   }
 
-  finalizeExit(poolId: string): Promise<Record<string, Json>> {
-    return this.submit("finalize_exit", { pool_id: poolId });
+  async finalizeExit(poolId: string): Promise<Record<string, Json>> {
+    const r = await this.submit("finalize_exit", { pool_id: poolId });
+    // the claim is gone: a later rejoin starts a fresh membership (new epoch, balance from 0)
+    this.latest.delete(poolId);
+    this.poolSeq.delete(poolId);
+    this.signer.forget(poolId);
+    return r;
   }
 
   /** Sign the next channel update adding `amount` for the payee. Off-chain; nothing is sent. */
@@ -285,7 +296,7 @@ export class Agent {
     const balance = prev + amount;
     if (balance > claim.deposit) throw new RangeError("pool deposit exhausted");
     const { now } = await this.node.now();
-    const u = this.signer.signUpdate("pool", poolId, pool.coordinator, seq, balance, now);
+    const u = this.signer.signUpdate("pool", poolId, pool.coordinator, seq, balance, now, claim.epoch);
     this.poolSeq.set(poolId, seq);
     this.latest.set(poolId, u);
     return u;
