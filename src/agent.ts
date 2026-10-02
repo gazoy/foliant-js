@@ -21,6 +21,31 @@ export interface PolicyDict {
 
 export class PolicyViolation extends Error {}
 
+// Spec §2/§2.2: a policy has exactly these seven fields (the schema sets "additionalProperties":
+// false, and so does $defs.keyRef). A loader that dropped a field it did not understand would
+// enforce less than the owner signed over, because `id` is computed from `toDict()` and so covers
+// only the fields that survived. Same rule, and the same message, as `_reject_unknown` in
+// foliant/accounts.py -- the two implementations have to agree on which policies are valid, or a
+// crew spanning both gets different budget semantics depending on which SDK parsed last.
+const DICT_FIELDS: ReadonlySet<string> = new Set([
+  "per_tx_max", "per_window_max", "window_secs", "allow_list", "deny_list", "expiry", "escalation",
+]);
+
+/**
+ * TypeScript rejects an excess property on an object *literal* typed as PolicyDict, but not on a
+ * variable and not on anything that came back from JSON.parse -- which is every policy this client
+ * actually sees. So the check has to exist at runtime.
+ */
+function rejectUnknown(d: unknown, allowed: ReadonlySet<string>): void {
+  if (typeof d !== "object" || d === null || Array.isArray(d)) {
+    const got = d === null ? "null" : Array.isArray(d) ? "array" : typeof d;
+    throw new PolicyViolation(`policy must be an object, not ${got}`);
+  }
+  // quote then sort, so the list reads the same as the Python reference's sorted repr()
+  const unknown = Object.keys(d).filter((k) => !allowed.has(k)).map((k) => `'${k}'`).sort();
+  if (unknown.length) throw new PolicyViolation(`unknown policy field(s): ${unknown.join(", ")}`);
+}
+
 export class Policy {
   constructor(
     public perTxMax: number,
@@ -45,6 +70,7 @@ export class Policy {
   }
 
   static fromDict(d: PolicyDict): Policy {
+    rejectUnknown(d, DICT_FIELDS);
     return new Policy(
       d.per_tx_max, d.per_window_max, d.window_secs,
       d.allow_list ? new Set(d.allow_list) : null, new Set(d.deny_list ?? []), d.expiry ?? null,
