@@ -25,6 +25,24 @@ this file says so in the entry rather than only in the version number.
 
   A non-object passed to `fromDict` now throws `PolicyViolation` rather than failing later.
 
+- **`Policy.fromDict` also rejects a policy that is *missing* one of the seven fields**, an address
+  list that is not a list of distinct strings, and an `expiry` outside `[1, 2^64)` — mirroring
+  `foliant-protocol` 0.1.4, which landed the same rules. A missing field is the more dangerous
+  half of the unknown-field rule in both implementations: the constructor defaults are the
+  permissive readings, `Agent.register` signs the id of whatever this client parsed, and `toDict()`
+  then sends all seven fields, so the node accepts a policy weaker than the owner intended without
+  anything to object to. The list rules matter for the same reason: a bare string became a `Set` of
+  single characters and duplicates were deduplicated, where the schema sets `uniqueItems: true`.
+
+  Not mirrored, deliberately: this client still cannot parse an **address-form** escalation
+  co-signer, which §2 permits and `foliant-protocol` 0.1.4 fixed in its envelope encoding.
+  `PublicKey.fromDict` expects a keyRef object. That is a missing feature rather than a
+  disagreement about validity, and it belongs with the 0.2.0 work.
+
+  The `expiry` bound is tested at `2**64` rather than `2**64 - 1`, because the latter is not
+  exactly representable as a `number` — a small instance of the limitation below, inside the fix
+  for a different one.
+
   **In practice this can break a caller** that was passing extra fields through, although
   TypeScript already rejected an excess property on an object literal typed as `PolicyDict`, so
   the realistic source is a value from `JSON.parse`.

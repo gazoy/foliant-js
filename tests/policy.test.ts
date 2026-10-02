@@ -29,6 +29,35 @@ describe("Policy.fromDict", () => {
     );
   });
 
+  it("refuses a missing field, naming every one", () => {
+    // the dangerous half: the constructor defaults are the permissive readings, and register()
+    // signs the id of whatever this client parsed, so an omitted field widened what the owner
+    // signed -- toDict() then sends all seven and the node accepts it
+    for (const dropped of Object.keys(good)) {
+      const short = Object.fromEntries(Object.entries(good).filter(([k]) => k !== dropped));
+      expect(() => Policy.fromDict(short as never)).toThrow(`missing policy field(s): '${dropped}'`);
+    }
+  });
+
+  it("refuses an address list that is not a list of distinct strings", () => {
+    for (const field of ["allow_list", "deny_list"]) {
+      const a = "0x" + "ab".repeat(20);
+      // a bare string would become a Set of single characters
+      expect(() => Policy.fromDict({ ...good, [field]: a } as never)).toThrow(/must be a list/);
+      expect(() => Policy.fromDict({ ...good, [field]: [1] } as never)).toThrow(/entries must be strings/);
+      expect(() => Policy.fromDict({ ...good, [field]: [a, a] } as never)).toThrow(/duplicate entries/);
+    }
+    // null is the allow_list's "any payee"; for deny_list it is not a list
+    expect(Policy.fromDict({ ...good, allow_list: null }).allowList).toBeNull();
+    expect(() => Policy.fromDict({ ...good, deny_list: null } as never)).toThrow(/must be a list/);
+  });
+
+  it("bounds expiry above, as the schema does", () => {
+    expect(() => Policy.fromDict({ ...good, expiry: 2 ** 64 } as never)).toThrow(/\[1, 2\^64\)/);
+    expect(() => Policy.fromDict({ ...good, expiry: 0 } as never)).toThrow(/\[1, 2\^64\)/);
+    expect(Policy.fromDict({ ...good, expiry: 1 }).expiry).toBe(1);
+  });
+
   it("refuses a non-object", () => {
     for (const bad of ["abc", 7, null, [good]]) {
       expect(() => Policy.fromDict(bad as never)).toThrow(/policy must be an object, not/);

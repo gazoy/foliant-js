@@ -31,19 +31,49 @@ const DICT_FIELDS: ReadonlySet<string> = new Set([
   "per_tx_max", "per_window_max", "window_secs", "allow_list", "deny_list", "expiry", "escalation",
 ]);
 
+// The schema's expiry maximum is 2**64 - 1, which is NOT exactly representable as a number
+// (see the Limits section of the README). 2**64 is -- it is a power of two -- and no
+// integer-valued double lies between the two, so an exclusive bound at 2**64 is the same test
+// without the rounding. An instance of why amounts need to become bigint.
+const EXPIRY_LIMIT = 2 ** 64;
+
 /**
  * TypeScript rejects an excess property on an object *literal* typed as PolicyDict, but not on a
  * variable and not on anything that came back from JSON.parse -- which is every policy this client
  * actually sees. So the check has to exist at runtime.
  */
-function rejectUnknown(d: unknown, allowed: ReadonlySet<string>): void {
+function checkFields(d: unknown, allowed: ReadonlySet<string>): void {
   if (typeof d !== "object" || d === null || Array.isArray(d)) {
     const got = d === null ? "null" : Array.isArray(d) ? "array" : typeof d;
     throw new PolicyViolation(`policy must be an object, not ${got}`);
   }
-  // quote then sort, so the list reads the same as the Python reference's sorted repr()
-  const unknown = Object.keys(d).filter((k) => !allowed.has(k)).map((k) => `'${k}'`).sort();
+  // quote then sort, so each list reads the same as the Python reference's sorted repr()
+  const keys = new Set(Object.keys(d));
+  const unknown = [...keys].filter((k) => !allowed.has(k)).map((k) => `'${k}'`).sort();
   if (unknown.length) throw new PolicyViolation(`unknown policy field(s): ${unknown.join(", ")}`);
+  // A missing field is the more dangerous half: the defaults below are the permissive readings,
+  // and register() signs the id of what this client parsed, so a field left out of the dict
+  // widens what the owner signed and the node accepts it -- toDict() sends all seven either way.
+  const missing = [...allowed].filter((k) => !keys.has(k)).map((k) => `'${k}'`).sort();
+  if (missing.length) throw new PolicyViolation(`missing policy field(s): ${missing.join(", ")}`);
+}
+
+/**
+ * Spec §2.1 and the schema's `uniqueItems`: an address list is a list of distinct strings. A bare
+ * string would otherwise become a Set of single characters, and duplicates would be deduplicated
+ * where the schema forbids them. Two spellings of one EVM address are a different matter and are
+ * left alone: the schema permits them and §2.1 defines addresses to compare in lowercase.
+ */
+function addrList(v: unknown, name: string): Set<string> {
+  if (!Array.isArray(v)) {
+    throw new PolicyViolation(`${name} must be a list, not ${v === null ? "null" : typeof v}`);
+  }
+  for (const a of v) {
+    if (typeof a !== "string") throw new PolicyViolation(`${name} entries must be strings, not ${typeof a}`);
+  }
+  const set = new Set<string>(v);
+  if (set.size !== v.length) throw new PolicyViolation(`${name} has duplicate entries`);
+  return set;
 }
 
 export class Policy {
@@ -70,10 +100,14 @@ export class Policy {
   }
 
   static fromDict(d: PolicyDict): Policy {
-    rejectUnknown(d, DICT_FIELDS);
+    checkFields(d, DICT_FIELDS);
+    if (d.expiry !== null && (!Number.isInteger(d.expiry) || d.expiry < 1 || d.expiry >= EXPIRY_LIMIT)) {
+      throw new PolicyViolation("expiry must be null or an integer in [1, 2^64)");
+    }
     return new Policy(
       d.per_tx_max, d.per_window_max, d.window_secs,
-      d.allow_list ? new Set(d.allow_list) : null, new Set(d.deny_list ?? []), d.expiry ?? null,
+      d.allow_list === null ? null : addrList(d.allow_list, "allow_list"),
+      addrList(d.deny_list, "deny_list"), d.expiry,
       d.escalation ? PublicKey.fromDict(d.escalation) : null,
     );
   }
