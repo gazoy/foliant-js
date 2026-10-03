@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { Policy, PolicyViolation } from "../src/agent.js";
 
 const good = {
-  per_tx_max: 10, per_window_max: 100, window_secs: 60,
+  per_tx_max: 10n, per_window_max: 100n, window_secs: 60n,
   allow_list: null, deny_list: [], expiry: null, escalation: null,
 };
 
@@ -53,9 +53,11 @@ describe("Policy.fromDict", () => {
   });
 
   it("bounds expiry above, as the schema does", () => {
-    expect(() => Policy.fromDict({ ...good, expiry: 2 ** 64 } as never)).toThrow(/\[1, 2\^64\)/);
-    expect(() => Policy.fromDict({ ...good, expiry: 0 } as never)).toThrow(/\[1, 2\^64\)/);
-    expect(Policy.fromDict({ ...good, expiry: 1 }).expiry).toBe(1);
+    expect(() => Policy.fromDict({ ...good, expiry: 2n ** 64n } as never)).toThrow(/\[1, 2\^64\)/);
+    expect(() => Policy.fromDict({ ...good, expiry: 0n } as never)).toThrow(/\[1, 2\^64\)/);
+    expect(Policy.fromDict({ ...good, expiry: 1n }).expiry).toBe(1n);
+    // the bound the schema actually writes, which no double represents
+    expect(Policy.fromDict({ ...good, expiry: 2n ** 64n - 1n }).expiry).toBe(2n ** 64n - 1n);
   });
 
   it("refuses a non-object", () => {

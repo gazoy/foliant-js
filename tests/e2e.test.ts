@@ -31,10 +31,10 @@ afterAll(() => {
 describe("TypeScript agent against the Python node", () => {
   it("registers, funds, pays 20 calls through a pool, and the provider settles once", async () => {
     const node = new LedgerNode(BASE);
-    const policy = new Policy(500, 200, 3600);
+    const policy = new Policy(500n, 200n, 3600n);
     const agent = await Agent.register(node, KeyPair.fromSeed("ts-owner"), KeyPair.fromSeed("ts-signer"), policy);
-    await node.faucet(agent.address, ASSET, 10_000);
-    const client = new PayingClient(agent, { defaultDeposit: 100, preferPool: true });
+    await node.faucet(agent.address, ASSET, 10_000n);
+    const client = new PayingClient(agent, { defaultDeposit: 100n, preferPool: true });
     for (let i = 0; i < 20; i++) {
       const r = await client.fetch(`${BASE}/infer`, { method: "POST", body: `prompt ${i}` });
       expect(r.status).toBe(200);
@@ -43,16 +43,17 @@ describe("TypeScript agent against the Python node", () => {
     expect(client.receipts.length).toBe(20);
     expect(client.receipts[0].body.offerId).toBeTruthy();
     const acct = await agent.refresh();
-    expect(acct.spent_in_window).toBe(100); // one pool deposit is the committed value; 20 updates cost nothing more
+    expect(acct.spent_in_window).toBe(100n); // one pool deposit is the committed value; 20 updates cost nothing more
+    // plain fetch().json(), not the client's bigint-preserving parse, so this one is a number
     const settle = await (await fetch(`${BASE}/settle`, { method: "POST" })).json();
     expect(settle.settled).toBe(60);
   });
 
   it("is refused by its own policy, and the signer's window matches the ledger's", async () => {
     const node = new LedgerNode(BASE);
-    const agent = await Agent.register(node, KeyPair.fromSeed("ts-owner-2"), KeyPair.fromSeed("ts-signer-2"), new Policy(500, 200, 3600));
-    await node.faucet(agent.address, ASSET, 10_000);
-    const client = new PayingClient(agent, { defaultDeposit: 100, preferPool: false });
+    const agent = await Agent.register(node, KeyPair.fromSeed("ts-owner-2"), KeyPair.fromSeed("ts-signer-2"), new Policy(500n, 200n, 3600n));
+    await node.faucet(agent.address, ASSET, 10_000n);
+    const client = new PayingClient(agent, { defaultDeposit: 100n, preferPool: false });
     let refused: unknown = null;
     let ok = 0;
     for (let i = 0; i < 100 && !refused; i++) {
@@ -67,24 +68,24 @@ describe("TypeScript agent against the Python node", () => {
     expect(String((refused as Error).message)).toContain("per_window_max 200");
     expect(ok).toBe(66); // two 100-unit channels at 3 per call, as in the Python demo's scenario C
     const acct = await agent.refresh();
-    expect(acct.spent_in_window).toBe(200);
-    expect(agent.signer.window.spent((await node.now()).now, 3600)).toBe(200);
+    expect(acct.spent_in_window).toBe(200n);
+    expect(agent.signer.window.spent((await node.now()).now, 3600n)).toBe(200n);
   });
 
   it("recovers its deposit alone when it closes a channel", async () => {
     const node = new LedgerNode(BASE);
     const provider = KeyPair.fromSeed("provider").address;
-    const agent = await Agent.register(node, KeyPair.fromSeed("ts-owner-3"), KeyPair.fromSeed("ts-signer-3"), new Policy(500, 500, 3600));
-    await node.faucet(agent.address, ASSET, 1_000);
-    const cid = await agent.openChannel(provider, ASSET, 100, 1);
-    await agent.payChannel(cid, 30);
+    const agent = await Agent.register(node, KeyPair.fromSeed("ts-owner-3"), KeyPair.fromSeed("ts-signer-3"), new Policy(500n, 500n, 3600n));
+    await node.faucet(agent.address, ASSET, 1_000n);
+    const cid = await agent.openChannel(provider, ASSET, 100n, 1n);
+    await agent.payChannel(cid, 30n);
     await agent.closeChannel(cid);
     const before = (await node.balance(agent.address, ASSET)).balance;
     await new Promise((res) => setTimeout(res, 1_500)); // the served devnet's clock follows wall time
     await agent.finalizeClose(cid);
-    expect((await node.balance(agent.address, ASSET)).balance).toBe(before + 70);
+    expect((await node.balance(agent.address, ASSET)).balance).toBe(before + 70n);
     const ch = await node.channel(cid);
     expect(ch.closed).toBe(true);
-    expect(ch.balance_to_payee).toBe(30);
+    expect(ch.balance_to_payee).toBe(30n);
   });
 });

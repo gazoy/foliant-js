@@ -126,5 +126,37 @@
    "escalation": null
   },
   "id": "4ab4972f3b6645fbcaaa13f17e91bef794670e91ced0cb946814e4a99ca5b21f"
+ },
+ "big_integers": {
+  "policy": {
+   "note": "18-decimal amounts and the exact 2^64-1 expiry; per_window_max is 1e21, which JS String() renders as 1e+21",
+   "dict": {
+    "per_tx_max": 5000000000000000000,
+    "per_window_max": 1000000000000000000000,
+    "window_secs": 3600,
+    "allow_list": null,
+    "deny_list": [],
+    "expiry": 18446744073709551615,
+    "escalation": null
+   },
+   "canonical": "{\"allow_list\":null,\"deny_list\":[],\"escalation\":null,\"expiry\":18446744073709551615,\"per_tx_max\":5000000000000000000,\"per_window_max\":1000000000000000000000,\"window_secs\":3600}",
+   "id": "73ba654161f379b55a5054ababaf173374e803a97fbe59a17ff4d86db2faae51"
+  },
+  "update": {
+   "note": "a channel update whose balance exceeds 2^53; the signature covers the digits, not 1.2345678901234568e+20",
+   "body": {
+    "kind": "channel",
+    "id": "big",
+    "seq": 7,
+    "balance": 123456789012345678901,
+    "account": "00000000000000000000000000000000"
+   },
+   "canonical": "{\"account\":\"00000000000000000000000000000000\",\"balance\":123456789012345678901,\"id\":\"big\",\"kind\":\"channel\",\"seq\":7}",
+   "signature": "3549c9b8a92b6d90b9916b1abb66165ad0c1e17231ee914e64418b3bc5330f1dc7521041bcf3639f84c9fe923be9572d5936d4e9abf3fda3040e87af92dca308",
+   "signer": {
+    "scheme": "ed25519",
+    "key": "d5bf4a3fcce717b0388bcc2749ebc148ad9969b23f45ee1b605fd58778576ac4"
+   }
+  }
  }
 }
