@@ -5,7 +5,9 @@
   "main": "dist/index.js",
   "scripts": {
     "test": "vitest run",
-    "build": "tsc -p tsconfig.json"
+    "test:unit": "vitest run --exclude 'tests/e2e.test.ts' --exclude 'tests/conformance.test.ts'",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build && npm run test:unit"
   },
   "keywords": [
     "x402",
@@ -16,6 +18,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "types": "dist/index.d.ts",
+  "engines": {
+    "node": ">=22"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

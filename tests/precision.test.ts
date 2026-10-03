@@ -8,8 +8,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { KeyPair, Signed, canonical, hashObj, parseJsonBig } from "../src/crypto.js";
-import { Policy, PolicyViolation } from "../src/agent.js";
+import { KeyPair, Signed, canonical, canonicalBytes, hashObj, parseJsonBig } from "../src/crypto.js";
+import { Agent, AgentSigner, LedgerNode, Policy, PolicyViolation } from "../src/agent.js";
 
 const RAW = readFileSync(new URL("./vectors.json", import.meta.url), "utf8");
 // read with the library's own parser: JSON.parse would round these vectors while loading them
@@ -47,15 +47,138 @@ describe("integers above 2^53", () => {
     expect(new Signed(UPDATE.body, Signed.fromDict(UPDATE as never).signer, UPDATE.signature).valid()).toBe(true);
   });
 
-  it("refuses a number that has already lost digits rather than hashing it", () => {
+  it("refuses a number, at every magnitude, rather than hashing it", () => {
     expect(() => canonical({ a: 1e21 })).toThrow(/pass a bigint/);
     expect(() => canonical({ a: 2 ** 53 + 2 })).toThrow(/pass a bigint/);
-    expect(canonical({ a: 2 ** 53 - 1 })).toBe('{"a":9007199254740991}');
+    // A magnitude test could not have been right either way round. It refused 2**53, which Python
+    // renders identically, and admitted the one shape the two implementations disagree about: an
+    // integral float, which Python writes as `1.0` and JavaScript cannot distinguish from `1`.
+    expect(() => canonical({ a: 2 ** 53 - 1 })).toThrow(/pass a bigint/);
+    expect(() => canonical({ a: 1 })).toThrow(/pass a bigint/);
+    expect(() => canonical({ a: 1.0 })).toThrow(/pass a bigint/);
+    expect(() => canonical({ a: 1.5 })).toThrow(/pass a bigint/);
+    expect(canonical({ a: 1n })).toBe('{"a":1}'); // the bigint says which of the two it is
   });
 
   it("refuses a policy amount given as a number", () => {
     const asNumbers = { ...POLICY.dict, per_tx_max: 5e18 };
     expect(() => Policy.fromDict(asNumbers)).toThrow(PolicyViolation);
     expect(() => Policy.fromDict(asNumbers)).toThrow(/must be a bigint, not a number/);
+  });
+});
+
+/**
+ * The migration's own hot path, above 2^53.
+ *
+ * The vectors above prove `canonical` and the policy id; these prove the arithmetic and the
+ * plumbing around them -- the node's response parsed, the previous balance added to, the sequence
+ * advanced, the body signed -- which the suite only ever exercised at 30n.
+ *
+ * The node is stubbed rather than spawned, so the figures can be ones no devnet faucet would mint,
+ * and so that the response text is written out with its digits: that is what `LedgerNode` has to
+ * read exactly. The signatures are checked against the key that made them; the cross-language
+ * halves are the `big_integers` vectors above and the live-node test in e2e.test.ts.
+ */
+const SIGNER = KeyPair.fromSeed("big-signer");
+const ACCOUNT = "ab".repeat(16);
+const PAYEE = "0x" + "aa".repeat(20);
+const E18 = 10n ** 18n;
+const E21 = 10n ** 21n;
+const BIG = 123456789012345678901n; // the balance in the cross-language update vector
+
+/** A node that answers the four GETs `attach`, `payChannel` and `payPool` make, with big figures. */
+function stubbed(): LedgerNode {
+  const routes: Record<string, string> = {
+    "/ledger/now": '{"now":1764000000}',
+    [`/ledger/accounts/${ACCOUNT}`]: `{
+      "id": "${ACCOUNT}", "address": "${"cd".repeat(20)}",
+      "owner": {"scheme":"ed25519","key":"${"11".repeat(32)}"},
+      "signer": {"scheme":"ed25519","key":"${SIGNER.public.hex}"},
+      "policy": {"per_tx_max": ${E21}, "per_window_max": ${E21 * 2n}, "window_secs": 3600,
+                 "allow_list": null, "deny_list": [], "expiry": 18446744073709551615, "escalation": null},
+      "nonce": 1234567890123456789, "parent": null, "spent_in_window": ${E18},
+      "balances": {"USDC": ${E21}}
+    }`,
+    "/ledger/channels/chan": `{"id":"chan","payer_account":"${ACCOUNT}","payee":"${PAYEE}","asset":"USDC",
+      "deposit": ${E21}, "balance_to_payee": ${E18}, "seq": 9007199254740993,
+      "timeout_secs": 3600, "closing_at": null, "closed": false}`,
+    "/ledger/pools/pool": `{"id":"pool","coordinator":"${PAYEE}","asset":"USDC","timeout_secs":3600,
+      "members": {"${ACCOUNT}": {"deposit": ${E21}, "paid": ${E18}, "seq": 7,
+                                 "exit_at": null, "exited": false, "epoch": 2}}}`,
+  };
+  const fetchFn = (async (url: string | URL) => {
+    const body = routes[new URL(String(url)).pathname];
+    return body === undefined
+      ? new Response("not found", { status: 404 })
+      : new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  return new LedgerNode("http://node.invalid", fetchFn);
+}
+
+describe("the signing path above 2^53", () => {
+  it("parses an account view without rounding any of it", () => {
+    // every integer in the view, not only the amounts: the nonce goes into a signed body and the
+    // channel seq into the update the node compares against its own
+    return Agent.attach(stubbed(), ACCOUNT, SIGNER).then((agent) => {
+      expect(agent.account.nonce).toBe(1234567890123456789n);
+      expect(agent.account.spent_in_window).toBe(E18);
+      expect(agent.signer.policy.perTxMax).toBe(E21);
+      expect(agent.signer.policy.expiry).toBe(2n ** 64n - 1n);
+      expect(agent.account.balances.USDC).toBe(E21);
+    });
+  });
+
+  it("signs a channel update whose balance and seq carry every digit", async () => {
+    const agent = await Agent.attach(stubbed(), ACCOUNT, SIGNER);
+    const u = await agent.payChannel("chan", BIG);
+    expect(u.body.balance).toBe(E18 + BIG); // 124456789012345678901, not 1.2445678901234568e+20
+    expect(u.body.seq).toBe(9007199254740994n); // one past 2^53 + 1, where a double cannot count
+    expect(canonical(u.body)).toContain('"balance":124456789012345678901');
+    expect(canonical(u.body)).toContain('"seq":9007199254740994');
+    expect(SIGNER.public.verify(canonicalBytes(u.body), Uint8Array.from(Buffer.from(u.signature, "hex")))).toBe(true);
+    // and the second update builds on the first rather than on the node's stale balance
+    const u2 = await agent.payChannel("chan", 1n);
+    expect(u2.body.balance).toBe(E18 + BIG + 1n);
+    expect(u2.body.seq).toBe(9007199254740995n);
+  });
+
+  it("refuses a channel update past the deposit at that scale", async () => {
+    const agent = await Agent.attach(stubbed(), ACCOUNT, SIGNER);
+    await expect(agent.payChannel("chan", E21)).rejects.toThrow(/deposit exhausted/);
+  });
+
+  it("signs a pool update that carries the digits and the epoch", async () => {
+    const agent = await Agent.attach(stubbed(), ACCOUNT, SIGNER);
+    const u = await agent.payPool("pool", BIG);
+    expect(u.body.balance).toBe(E18 + BIG);
+    expect(u.body.epoch).toBe(2n);
+    expect(u.body.seq).toBe(8n);
+    expect(hashObj(u.body as never)).toBe(hashObj(parseJsonBig(canonical(u.body)) as never));
+  });
+
+  it("signs an update directly, and refuses one that would go backwards", () => {
+    const signer = new AgentSigner(SIGNER, new Policy(E21, E21 * 2n, 3600n), ACCOUNT);
+    const u = signer.signUpdate("channel", "chan", PAYEE, 2n ** 60n, BIG, 1764000000n);
+    expect(canonical(u.body)).toBe(
+      `{"account":"${ACCOUNT}","balance":123456789012345678901,"id":"chan","kind":"channel","seq":1152921504606846976}`,
+    );
+    expect(u.valid()).toBe(true);
+    expect(() => signer.signUpdate("channel", "chan", PAYEE, 2n ** 60n + 1n, BIG - 1n, 1764000000n))
+      .toThrow(/must not decrease/);
+  });
+
+  it("checks a policy at magnitudes a double cannot tell apart", () => {
+    const p = new Policy(E21, E21, 3600n);
+    // 2^53 + 1 and 2^53 + 2 are one double apart from each other and from 2^53; as bigints the
+    // boundary is where the policy says it is
+    const near = new Policy(2n ** 53n + 1n, 2n ** 53n + 1n, 3600n);
+    expect(() => near.check(2n ** 53n + 1n, PAYEE, 0n, 0n)).not.toThrow();
+    expect(() => near.check(2n ** 53n + 2n, PAYEE, 0n, 0n)).toThrow(/exceeds per_tx_max/);
+    // the window cap at the same scale, and with the already-spent figure above 2^53 too
+    expect(() => p.check(E18, PAYEE, 0n, E21 - E18, false)).not.toThrow();
+    expect(() => p.check(E18 + 1n, PAYEE, 0n, E21 - E18, false)).toThrow(/would exceed per_window_max/);
+    // check-029's property, at the top of the uint128 range: the sum must not wrap
+    const full = new Policy(2n ** 128n - 1n, 2n ** 128n - 1n, 3600n);
+    expect(() => full.check(1n, PAYEE, 1000n, 2n ** 128n - 1n)).toThrow(/would exceed per_window_max/);
   });
 });

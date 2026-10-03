@@ -7,7 +7,9 @@
  * when a deposit is applied. Off-chain updates are bounded by the deposit they
  * draw on.
  */
-import { canonical, hashObj, Json, KeyPair, parseJsonBig, PublicKey, sign, Signed, SignedDict } from "./crypto.js";
+import {
+  canonical, hashObj, InvalidKey, Json, KeyPair, parseJsonBig, PublicKey, PublicKeyDict, sign, Signed, SignedDict,
+} from "./crypto.js";
 
 export interface PolicyDict {
   per_tx_max: bigint;
@@ -16,7 +18,10 @@ export interface PolicyDict {
   allow_list: string[] | null;
   deny_list: string[];
   expiry: bigint | null;
-  escalation: { scheme: string; key: string } | null;
+  // Spec §2: a key reference, an address string, or null. The address form is what makes this a
+  // union: a Python node accepts and stores one, so a client typed for the object form alone
+  // could not attach to such an account at all.
+  escalation: PublicKeyDict | string | null;
 }
 
 export class PolicyViolation extends Error {}
@@ -35,6 +40,12 @@ const DICT_FIELDS: ReadonlySet<string> = new Set([
 // as the schema writes it; the earlier code tested against an exclusive 2**64 because no double
 // represents 2**64 - 1 and the rounding would otherwise have admitted it.
 const EXPIRY_MAX = 2n ** 64n - 1n;
+// The other two bounds `Policy.__post_init__` applies, with the same values and for the same
+// reasons: spec §2 lets an implementation bound amounts and `windowSecs` provided it documents the
+// bound and rejects rather than truncates, and the Python reference bounds them to these.
+const UINT128_MAX = 2n ** 128n - 1n;
+const MAX_WINDOW_SECS = 30n * 86400n;
+const ZERO_ADDRESS = "0x" + "0".repeat(40);
 
 /**
  * TypeScript rejects an excess property on an object *literal* typed as PolicyDict, but not on a
@@ -58,21 +69,96 @@ function checkFields(d: unknown, allowed: ReadonlySet<string>): void {
 }
 
 /**
- * Spec §2.1 and the schema's `uniqueItems`: an address list is a list of distinct strings. A bare
- * string would otherwise become a Set of single characters, and duplicates would be deduplicated
- * where the schema forbids them. Two spellings of one EVM address are a different matter and are
- * left alone: the schema permits them and §2.1 defines addresses to compare in lowercase.
+ * The type guard every integer field shares. Deliberately not coercing: a number reaching here is
+ * either already rounded or about to be, and accepting the small ones would hide the defect until
+ * the first large one.
  */
-function amount(v: unknown, name: string): bigint {
+function integerField(v: unknown, name: string): bigint {
   if (typeof v === "bigint") return v;
-  // Deliberately not coerced. A number reaching here is either already rounded or about to be,
-  // and accepting the small ones would hide the defect until the first large one.
   if (typeof v === "number") {
     throw new PolicyViolation(`${name} must be a bigint, not a number: a number holds integers exactly only below 2^53`);
   }
   throw new PolicyViolation(`${name} must be a bigint, not ${v === null ? "null" : typeof v}`);
 }
 
+/**
+ * `per_tx_max` / `per_window_max`: a uint128, as `Policy.__post_init__` bounds them.
+ *
+ * The range is checked here and not only at construction sites, because a policy arrives from the
+ * node (`Agent.attach`, `refresh`) as well as from local code, and the signer exists precisely so
+ * that the enclave does not take the node's word for the policy it is enforcing.
+ */
+function amount(v: unknown, name: string): bigint {
+  const n = integerField(v, name);
+  if (n < 0n || n > UINT128_MAX) throw new PolicyViolation(`${name} must be an integer in [0, 2^128)`);
+  return n;
+}
+
+/**
+ * `window_secs`: at least 1, at most the reference's 30 days.
+ *
+ * Zero is the dangerous end, and it is a fail-open rather than a nuisance: `SpendWindow.spent`
+ * takes `cutoff = now - windowSecs` and keeps entries with `t > cutoff`, so at 0 every entry is
+ * pruned the instant it is recorded, `spentInWindow` is always 0 and `per_window_max` stops
+ * existing in the signer. A node serving `window_secs: 0` would disable the cap it was supposed
+ * to be checked against.
+ */
+function windowSecsField(v: unknown): bigint {
+  const n = integerField(v, "window_secs");
+  if (n < 1n || n > MAX_WINDOW_SECS) throw new PolicyViolation(`window_secs must be in [1, ${MAX_WINDOW_SECS}]`);
+  return n;
+}
+
+/** `expiry`: null, or a uint64 of at least 1. Wire-form 0 is invalid (spec §2). */
+function expiryField(v: unknown): bigint | null {
+  if (v === null) return null;
+  const n = integerField(v, "expiry");
+  if (n < 1n || n > EXPIRY_MAX) throw new PolicyViolation("expiry must be null or an integer in [1, 2^64)");
+  return n;
+}
+
+/**
+ * Spec §2 and `_escalation` in foliant/accounts.py: the co-signer is a keyRef object, an address
+ * string, or null. The address form is not a curiosity -- a Python node accepts and stores one --
+ * and calling `PublicKey.fromDict` on it unconditionally made `Agent.attach` to such an account
+ * throw a raw TypeError out of @noble, from a policy the node considered perfectly valid.
+ */
+function escalationField(v: unknown): PublicKey | string | null {
+  if (!v) return null; // Python's `esc or None`: null, and anything else falsy, is no co-signer
+  if (typeof v === "string") return v; // canonicalised with the lists, in the constructor
+  if (typeof v === "object" && !Array.isArray(v)) {
+    try {
+      return PublicKey.fromDict(v as PublicKeyDict);
+    } catch (e) {
+      // §2: an invalid policy reports policy_invalid whichever part of it is invalid, so the
+      // key-level reason travels in the message rather than as InvalidKey, as `_escalation` does
+      if (e instanceof InvalidKey) throw new PolicyViolation(`escalation: ${e.message}`);
+      throw e;
+    }
+  }
+  // One narrowing against the reference, which returns any truthy non-dict value unchanged: a
+  // number or a boolean would survive there as the co-signer, where it can only ever fail the
+  // ledger's signer comparison. The schema admits exactly null, an address and a keyRef, so
+  // refusing the rest cannot refuse a policy a conformant node could have meant anything by.
+  throw new PolicyViolation(`escalation must be a key reference, an address string, or null, not ${typeof v}`);
+}
+
+/** Spec §2.1: EVM addresses compare in lowercase hex; other address forms as given. */
+export function canonicalAddress(a: string): string {
+  if (typeof a !== "string") {
+    throw new PolicyViolation(`address must be a string, not ${a === null ? "null" : typeof a}`);
+  }
+  return a.startsWith("0x") || a.startsWith("0X") ? a.toLowerCase() : a;
+}
+
+/**
+ * Spec §2.1 and the schema's `uniqueItems`: an address list is a list of distinct strings. A bare
+ * string would otherwise become a Set of single characters, and duplicates would be deduplicated
+ * where the schema forbids them. Two spellings of one EVM address are not duplicates here -- the
+ * schema's `uniqueItems` compares the strings as given -- but they do collapse a moment later,
+ * because §2.1 defines addresses to compare in lowercase and the constructor canonicalises every
+ * entry, exactly as `Policy.__post_init__` does.
+ */
 function addrList(v: unknown, name: string): Set<string> {
   if (!Array.isArray(v)) {
     throw new PolicyViolation(`${name} must be a list, not ${v === null ? "null" : typeof v}`);
@@ -93,8 +179,30 @@ export class Policy {
     public allowList: Set<string> | null = null,
     public denyList: Set<string> = new Set(),
     public expiry: bigint | null = null,
-    public escalation: PublicKey | null = null,
-  ) {}
+    public escalation: PublicKey | string | null = null,
+  ) {
+    // Everything `Policy.__post_init__` does, and here for the same reason it is there rather than
+    // in `from_dict`: this is the one gate every policy passes through, whether it was written by
+    // the caller, parsed from the node's account view, or rebuilt by `toDict`/`fromDict` on every
+    // refresh. Validation only in `fromDict` left the public constructor checking nothing at all.
+    this.perTxMax = amount(perTxMax, "per_tx_max");
+    this.perWindowMax = amount(perWindowMax, "per_window_max");
+    this.windowSecs = windowSecsField(windowSecs);
+    this.expiry = expiryField(expiry);
+    // Canonicalise the lists (spec §2.1). Without this a mixed-case policy hashes to a different
+    // id than the node's, so `Agent.register` fails with "registration body does not match
+    // parameters"; a deny entry in the wrong case never matches a payee; and an allow entry in the
+    // wrong case can never be paid. Two spellings of one address collapse into one, as they do in
+    // the reference's frozenset comprehension.
+    if (this.allowList !== null) this.allowList = new Set([...this.allowList].map(canonicalAddress));
+    this.denyList = new Set([...this.denyList].map(canonicalAddress));
+    if (typeof this.escalation === "string") {
+      this.escalation = canonicalAddress(this.escalation);
+      // §2: the all-zero address is invalid for the same reason `expiry` 0 is -- a binary encoding
+      // may use it for "none" internally, so a wire-form one must be rejected, not passed through
+      if (this.escalation === ZERO_ADDRESS) throw new PolicyViolation("escalation must not be the zero address");
+    }
+  }
 
   toDict(): PolicyDict {
     return {
@@ -104,21 +212,22 @@ export class Policy {
       allow_list: this.allowList ? [...this.allowList].sort() : null,
       deny_list: [...this.denyList].sort(),
       expiry: this.expiry,
-      escalation: this.escalation ? this.escalation.toDict() : null,
+      // an address-form co-signer stays a string, as it does in the reference's `to_dict`;
+      // assuming a PublicKey is what made `id` throw on one
+      escalation: this.escalation instanceof PublicKey ? this.escalation.toDict() : this.escalation,
     };
   }
 
   static fromDict(d: PolicyDict): Policy {
     checkFields(d, DICT_FIELDS);
-    if (d.expiry !== null && (typeof d.expiry !== "bigint" || d.expiry < 1n || d.expiry > EXPIRY_MAX)) {
-      throw new PolicyViolation("expiry must be null or an integer in [1, 2^64)");
-    }
+    // The field types and ranges are the constructor's job (as `__post_init__` is the dataclass's),
+    // so this only has to turn the wire shapes into the constructor's: lists into Sets, the
+    // escalation union into a PublicKey or an address.
     return new Policy(
-      amount(d.per_tx_max, "per_tx_max"), amount(d.per_window_max, "per_window_max"),
-      amount(d.window_secs, "window_secs"),
+      d.per_tx_max, d.per_window_max, d.window_secs,
       d.allow_list === null ? null : addrList(d.allow_list, "allow_list"),
       addrList(d.deny_list, "deny_list"), d.expiry,
-      d.escalation ? PublicKey.fromDict(d.escalation) : null,
+      escalationField(d.escalation),
     );
   }
 
@@ -128,6 +237,11 @@ export class Policy {
 
   /** Same checks, same order, same messages as Policy.check in Python. */
   check(amount: bigint, payee: string, now: bigint, spentInWindow: bigint, escalated = false): void {
+    // Spec §2.1 requires the payee canonicalised at evaluation, as the lists are at load; vectors
+    // check-030 and check-031 are a mixed-case payee against a lowercase allow list and the
+    // reverse. The node stores whatever case the channel was opened with, so without this a
+    // deny-listed provider keeps getting updates signed.
+    payee = canonicalAddress(payee);
     if (amount < 0n) throw new PolicyViolation("negative amount");
     if (this.expiry !== null && now >= this.expiry) throw new PolicyViolation("policy expired");
     if (this.denyList.has(payee)) throw new PolicyViolation(`payee ${payee} is denied`);
@@ -263,6 +377,25 @@ export class LedgerNode {
   }
 }
 
+/**
+ * Read a bigint field out of a node's view, refusing anything else.
+ *
+ * `LedgerNode.call` ends in `parseJsonBig(...) as T`: the cast is an assertion about a document the
+ * node wrote, not a check. That matters most at the deposit guards below, which are the only bound
+ * an off-chain update has (spec §7.1 -- the deposit is the spend, already checked against the
+ * policy when the channel was opened). Every one of `balance > ch.deposit`, `balance > undefined`
+ * and `balance > {}` evaluates to false, so a node that omits the field, or sends it as a string
+ * or an object, gets an update signed for any amount at all. Compare nothing that was not read as
+ * a bigint.
+ */
+function fromNode(view: Record<string, unknown>, field: string, what: string): bigint {
+  const v = view[field];
+  if (typeof v !== "bigint") {
+    throw new LedgerError(`${what}: ${field} is ${v === undefined ? "missing" : `not an integer (${typeof v})`}`, 0);
+  }
+  return v;
+}
+
 /** An agent: one account on the node, operated by a signer under a policy. */
 export class Agent {
   readonly latest = new Map<string, Signed>();
@@ -353,10 +486,13 @@ export class Agent {
   /** Sign the next channel update adding `amount` for the payee. Off-chain; nothing is sent. */
   async payChannel(channelId: string, amount: bigint): Promise<Signed> {
     const ch = await this.node.channel(channelId);
-    const seq = (this.channelSeq.get(channelId) ?? ch.seq) + 1n;
-    const prev = this.latest.has(channelId) ? (this.latest.get(channelId)!.body.balance as bigint) : ch.balance_to_payee;
+    const deposit = fromNode(ch as unknown as Record<string, unknown>, "deposit", "channel");
+    const seq = (this.channelSeq.get(channelId) ?? fromNode(ch as unknown as Record<string, unknown>, "seq", "channel")) + 1n;
+    const prev = this.latest.has(channelId)
+      ? (this.latest.get(channelId)!.body.balance as bigint)
+      : fromNode(ch as unknown as Record<string, unknown>, "balance_to_payee", "channel");
     const balance = prev + amount;
-    if (balance > ch.deposit) throw new RangeError("channel deposit exhausted");
+    if (balance > deposit) throw new RangeError("channel deposit exhausted");
     const { now } = await this.node.now();
     const u = this.signer.signUpdate("channel", channelId, ch.payee, seq, balance, now);
     this.channelSeq.set(channelId, seq);
@@ -368,12 +504,16 @@ export class Agent {
     const pool = await this.node.pool(poolId);
     const claim = pool.members[this.account.id];
     if (!claim || claim.exited) throw new Error("not a member of this pool");
-    const seq = (this.poolSeq.get(poolId) ?? claim.seq) + 1n;
-    const prev = this.latest.has(poolId) ? (this.latest.get(poolId)!.body.balance as bigint) : claim.paid;
+    const c = claim as unknown as Record<string, unknown>;
+    const deposit = fromNode(c, "deposit", "pool claim");
+    const seq = (this.poolSeq.get(poolId) ?? fromNode(c, "seq", "pool claim")) + 1n;
+    const prev = this.latest.has(poolId)
+      ? (this.latest.get(poolId)!.body.balance as bigint)
+      : fromNode(c, "paid", "pool claim");
     const balance = prev + amount;
-    if (balance > claim.deposit) throw new RangeError("pool deposit exhausted");
+    if (balance > deposit) throw new RangeError("pool deposit exhausted");
     const { now } = await this.node.now();
-    const u = this.signer.signUpdate("pool", poolId, pool.coordinator, seq, balance, now, claim.epoch);
+    const u = this.signer.signUpdate("pool", poolId, pool.coordinator, seq, balance, now, fromNode(c, "epoch", "pool claim"));
     this.poolSeq.set(poolId, seq);
     this.latest.set(poolId, u);
     return u;

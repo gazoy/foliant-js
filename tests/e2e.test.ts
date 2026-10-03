@@ -88,4 +88,43 @@ describe("TypeScript agent against the Python node", () => {
     expect(ch.closed).toBe(true);
     expect(ch.balance_to_payee).toBe(30n);
   });
+
+  // No live test above 2^53: the served devnet's faucet is capped at 1,000,000 a call, so the node
+  // cannot be funded to that scale. The client's own path at those magnitudes is in
+  // precision.test.ts against a stubbed node, and agreement with foliant/crypto.py on the bytes
+  // and the signature is the `big_integers` vectors, which the Python reference generated.
+
+  it("registers a policy whose addresses are in mixed case", async () => {
+    // The node canonicalises the lists it is given (§2.1, Policy.__post_init__) and hashes the
+    // result, so a client that did not failed registration with "registration body does not match
+    // parameters": `Agent.register` has the owner sign the id this client computed.
+    const node = new LedgerNode(BASE);
+    const allow = "0x" + "AB".repeat(20);
+    const deny = "0x" + "CD".repeat(20);
+    const policy = new Policy(500n, 2000n, 3600n, new Set([allow]), new Set([deny]));
+    const agent = await Agent.register(
+      node, KeyPair.fromSeed("ts-owner-case"), KeyPair.fromSeed("ts-signer-case"), policy,
+    );
+    // the node's own view of the policy hashes to the same id, which is what "same policy" means
+    expect(Policy.fromDict(agent.account.policy).id).toBe(policy.id);
+    expect([...Policy.fromDict(agent.account.policy).denyList]).toEqual([deny.toLowerCase()]);
+    // and the signer evaluates a payee given in either case against it (vectors check-030/031)
+    expect(() => agent.signer.policy.check(1n, allow, 1000n, 0n)).not.toThrow();
+    expect(() => agent.signer.policy.check(1n, allow.toLowerCase(), 1000n, 0n)).not.toThrow();
+    expect(() => agent.signer.policy.check(1n, deny.toLowerCase(), 1000n, 0n)).toThrow(/is denied/);
+    expect(() => agent.signer.policy.check(1n, deny, 1000n, 0n)).toThrow(/is denied/);
+  });
+
+  it("attaches to an account whose co-signer is an address, which §2 permits", async () => {
+    // The node accepts and stores an address-form escalation; `Policy.fromDict` called
+    // PublicKey.fromDict on it unconditionally, so this threw a raw TypeError out of @noble
+    // against a policy the node considered perfectly valid.
+    const node = new LedgerNode(BASE);
+    const signerKp = KeyPair.fromSeed("ts-signer-esc");
+    const policy = new Policy(500n, 2000n, 3600n, null, new Set(), null, "0x" + "EE".repeat(20));
+    const agent = await Agent.register(node, KeyPair.fromSeed("ts-owner-esc"), signerKp, policy);
+    const again = await Agent.attach(node, agent.account.id, signerKp);
+    expect(again.signer.policy.escalation).toBe("0x" + "ee".repeat(20));
+    expect(again.signer.policy.id).toBe(policy.id);
+  });
 });

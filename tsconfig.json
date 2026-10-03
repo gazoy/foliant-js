@@ -1,8 +1,13 @@
 {
   "compilerOptions": {
     "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext",
-    "declaration": true, "outDir": "dist", "rootDir": "src", "strict": true,
-    "esModuleInterop": true, "skipLibCheck": true, "lib": ["ES2022", "DOM"], "types": ["node"]
+    "strict": true,
+    "esModuleInterop": true, "skipLibCheck": true, "lib": ["ES2022", "DOM"], "types": ["node"],
+    "noEmit": true
   },
-  "include": ["src"]
+  // The default project type-checks the tests as well as the sources. Leaving them out made the
+  // migration's central claim -- that no protocol integer is a `number` any more -- unenforced in
+  // the one place it is written down, and `npx tsc --noEmit` passed over a test that mixed the two.
+  // The build has its own project below, because `dist` is built from `src` alone.
+  "include": ["src", "tests"]
 }
