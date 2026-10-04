@@ -1,5 +1,8 @@
 /** End to end: the Python ledger node + metered API, driven by the TypeScript client. */
 import { spawn, ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Agent, KeyPair, LedgerNode, PayingClient, Policy, PolicyViolation } from "../src/index.js";
 
@@ -20,7 +23,17 @@ async function waitUp(): Promise<void> {
 }
 
 beforeAll(async () => {
-  server = spawn("python3", ["demo/serve.py", String(PORT)], { cwd: process.env.FOLIANT_REF ?? "/home/claude/concord", stdio: "ignore" });
+  const ref = process.env.FOLIANT_REF ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../concord");
+  if (!existsSync(resolve(ref, "demo/serve.py"))) {
+    throw new Error(
+      `The Foliant reference implementation is not at ${ref}. This suite drives its demo/serve.py ` +
+        `ledger node. Clone https://github.com/gazoy/concord beside this repository, or set FOLIANT_REF.`,
+    );
+  }
+  server = spawn("python3", ["demo/serve.py", String(PORT)], { cwd: ref, stdio: "ignore" });
+  server.on("error", (e) => {
+    throw new Error(`Could not start the ledger node from ${ref}: ${e.message}. Python 3.11 or newer must be on PATH.`);
+  });
   await waitUp();
 }, 30_000);
 

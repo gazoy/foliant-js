@@ -16,15 +16,26 @@
  */
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Policy, PolicyViolation } from "../src/agent.js";
 
-const REF = process.env.FOLIANT_REF ?? "/home/claude/concord";
+// The reference repository, which holds the specification and its vectors. Default to a sibling
+// checkout resolved from this file, which is how a developer clone and CI both lay it out;
+// FOLIANT_REF overrides it.
+const REF = process.env.FOLIANT_REF ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../concord");
 const PATH = `${REF}/docs/spec/vectors.json`;
-// Skipped rather than failed when the reference is not checked out: this suite is a cross-repo
-// agreement check, and `npm run test:unit` (what `prepublishOnly` runs) has to pass on a release
-// machine that has only this package.
-const HAVE_REF = existsSync(PATH);
-const vectors = HAVE_REF ? (JSON.parse(readFileSync(PATH, "utf8")).vectors as any[]) : [];
+// This fails rather than skips when the vectors are missing. A skip here is worse than useless:
+// it is the cross-repo agreement check reporting green while checking nothing, which is exactly
+// how a client drifts from the specification unnoticed. The release machine that has only this
+// package runs `npm run test:unit`, which excludes this file by name, so nothing needs the skip.
+if (!existsSync(PATH)) {
+  throw new Error(
+    `The specification's conformance vectors are not at ${PATH}. Clone ` +
+      `https://github.com/gazoy/concord beside this repository, or set FOLIANT_REF to where it is.`,
+  );
+}
+const vectors = JSON.parse(readFileSync(PATH, "utf8")).vectors as any[];
 
 interface Wire {
   perTxMax: string; perWindowMax: string; windowSecs: number;
@@ -67,7 +78,7 @@ const policies = vectors.filter((v) => v.kind === "policy");
 // which this client never sees: it reads the envelope form, where amounts are already integers.
 const GRAMMAR_ONLY = new Set(["policy-004", "policy-005"]);
 
-describe.skipIf(!HAVE_REF)("spending-policy.md conformance vectors", () => {
+describe("spending-policy.md conformance vectors", () => {
   it("has found the reference's vectors", () => {
     expect(checks.length).toBeGreaterThan(20);
     expect(policies.length).toBeGreaterThan(5);
