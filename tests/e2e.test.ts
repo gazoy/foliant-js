@@ -10,6 +10,8 @@ const PORT = 8412;
 const BASE = `http://127.0.0.1:${PORT}`;
 const ASSET = "USDC";
 let server: ChildProcess;
+// The node's own output, kept so a failure to start can say why instead of timing out mutely.
+let serverOutput = "";
 
 async function waitUp(): Promise<void> {
   for (let i = 0; i < 100; i++) {
@@ -19,7 +21,12 @@ async function waitUp(): Promise<void> {
     } catch { /* not yet */ }
     await new Promise((res) => setTimeout(res, 100));
   }
-  throw new Error("server did not start");
+  throw new Error(
+    "The ledger node did not answer on " + BASE + " within 10s." +
+      (serverOutput.trim() ? "\nIts output was:\n" + serverOutput.trim() : "\nIt produced no output.") +
+      "\nIf that names a missing module, install the reference's dependencies into the python3 on PATH: " +
+      "python3 -m pip install -r requirements.txt, from the reference checkout.",
+  );
 }
 
 beforeAll(async () => {
@@ -30,7 +37,10 @@ beforeAll(async () => {
         `ledger node. Clone https://github.com/gazoy/concord beside this repository, or set FOLIANT_REF.`,
     );
   }
-  server = spawn("python3", ["demo/serve.py", String(PORT)], { cwd: ref, stdio: "ignore" });
+  server = spawn("python3", ["demo/serve.py", String(PORT)], { cwd: ref, stdio: ["ignore", "pipe", "pipe"] });
+  server.stdout?.on("data", (d) => { serverOutput += d.toString(); });
+  server.stderr?.on("data", (d) => { serverOutput += d.toString(); });
+  server.on("exit", (code) => { if (code !== 0 && code !== null) serverOutput += `\n(the node exited with code ${code})`; });
   server.on("error", (e) => {
     throw new Error(`Could not start the ledger node from ${ref}: ${e.message}. Python 3.11 or newer must be on PATH.`);
   });
